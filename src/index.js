@@ -9,9 +9,11 @@ const argv = require('yargs')
   .alias('smushLayers', 's')
   .alias('stitchTiles', 'l')
   .alias('stitchWidth', 'w')
+  .alias('animations', 'a')
   .default('stitchWidth', 10)
   .boolean('smushLayers')
   .boolean('stitchTiles')
+  .boolean('animations')
   .describe('inputFile', 'The .pyxel file you wish to export.')
   .describe('outputDirectory', 'The directory where I put the exported tiles.')
   .describe('smushLayers', 'Smush all the layers and export the result.')
@@ -29,7 +31,6 @@ const Promise = require('bluebird');
 var fs = Promise.promisifyAll(require('fs'));
 
 const inputFile = new AdmZip(argv.inputFile);
-const entries = inputFile.getEntries();
 
 // Gotta find docData.json. That's the metadata about the images within.
 const docDataFile = inputFile.getEntry('docData.json');
@@ -100,6 +101,28 @@ function smushLayers() {
     });
 }
 
+
+function getSmushedImage() {
+  if (imageHash.has("smushed")) {
+    return Promise.resolve(imageHash.get("smushed"));
+  }
+  // All the tiles in this thing. Each is an array of an image that we'll squash later.
+  const outputTiles = new Map();
+  // Do in reverse order cuz we're applying composite, one on top of another.
+  const layerKeys = Object.keys(docData.canvas.layers).reverse();
+  return Promise.resolve(layerKeys)
+    .map(layerKey => getImage("layer" + layerKey + ".png"))
+    .reduce((acc, currentImage) => {
+      acc.composite(currentImage, 0, 0);
+      return acc;
+    }, new Jimp(docData.canvas.width, docData.canvas.height)
+  )
+  .then((acc) => {
+    imageHash.set("smushed", acc);
+    return acc;
+  });
+}
+
 function getAllTheTilenames() {
   return Promise.resolve(new Array(docData.tileset.numTiles))
     // Generate the filenames in the input file.
@@ -152,10 +175,46 @@ function exportTheTiles() {
     });
 }
 
+function exportAnimations() {
+  return Promise.resolve(Object.keys(docData.animations))
+    .map(key => docData.animations[key])
+    .each(animationObject => {
+      let tileWidth = docData.tileset.tileWidth
+      let animationSheetWidth = animationObject.length * tileWidth
+      let animationSheetHeight = docData.tileset.tileHeight
+      let outputFile = `${animationObject.name}`
+      let xOffset = tileWidth * animationObject.baseTile % docData.canvas.width
+      let yOffset = Math.floor(tileWidth * animationObject.baseTile / docData.canvas.width) * animationSheetHeight
+      return new Promise((resolve, reject) => {
+        const image = new Jimp(animationSheetWidth, animationSheetHeight, (err, image) => {
+          if (err) {
+            reject(err);
+          }
+          else {
+            resolve(image);
+          }
+        })
+      })
+      .then(image => {
+        getSmushedImage()
+        .then((i) => {
+          image.blit(i, 0, 0, xOffset, yOffset, animationSheetWidth, animationSheetHeight)
+          image.write(`${argv.outputDirectory}/${outputFile}.png`)
+        })
+      })
+    }
+  )}
+
+
 if (argv.smushLayers) {
   smushLayers();
-} if (argv.stitchTiles) {
+}
+if (argv.stitchTiles) {
   stitchTiles();
-} else {
+}
+if (argv.animations) {
+  exportAnimations();
+}
+else {
   exportTheTiles();
 }
